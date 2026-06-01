@@ -1976,31 +1976,34 @@ button:disabled {
 
     /* Map Split View adjustments on Mobile */
     .content-area.map-active {
+        display: flex;
         flex-direction: column;
-        height: 100%;
-        gap: 0;
-        overflow-y: auto; /* スクロールできるように修正！ */
+        padding: 0;
+        overflow: hidden; /* Prevent full page scroll */
     }
     
     .content-area.map-active #map-container {
         width: 100%;
-        height: 45vh; /* マップは画面上部の45%を占有 */
+        height: 30vh; /* Reduced height to ~30% */
         flex: none;
+        position: relative; /* Fixed within flex container */
         border-radius: 0;
         margin: 0;
-        position: sticky;
-        top: 0;
         z-index: 10;
         box-shadow: 0 4px 10px rgba(0,0,0,0.1);
     }
     
     .content-area.map-active .data-wrapper {
-        width: 100%;
-        max-width: none;
-        height: auto;
-        flex: none;
+        display: block !important;
+        flex: 1; /* Takes remaining height */
+        overflow-y: auto; /* Scrollable vertical list */
         padding: 15px;
-        padding-bottom: 100px; /* カートボタン分 */
+        padding-bottom: 80px; /* Space for plan cart */
+        -webkit-overflow-scrolling: touch;
+    }
+    
+    #map-spots-carousel {
+        display: none !important; /* Hide carousel in favor of vertical list */
     }
     
     .main-header {
@@ -2008,18 +2011,41 @@ button:disabled {
     }
     .header-top {
         margin-bottom: 8px;
+        flex-wrap: nowrap;
+        gap: 8px;
+    }
+    .header-title-area {
+        flex: 1;
+        min-width: 0;
+    }
+    .header-title-area h2 {
+        font-size: 1.15rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .toolbar-right {
+        flex-shrink: 0;
+    }
+    #view-toggle-btn, #auth-btn {
+        padding: 6px 10px !important;
+        font-size: 12px !important;
     }
     .header-bottom {
         flex-direction: column;
         align-items: stretch;
+        gap: 8px;
     }
-    .toolbar-left, .toolbar-right, .distance-sort-wrapper {
+    .toolbar-left, .distance-sort-wrapper {
         width: 100%;
-        justify-content: space-between;
+        justify-content: flex-start;
+        display: flex;
+        gap: 8px;
     }
     #keyword-search, #base-location-input {
         flex: 1;
-        width: auto;
+        width: 100%;
+        min-width: 0;
     }
 
     /* Plan Cart adjustments (Bottom Sheet Style on Mobile) */
@@ -2033,6 +2059,7 @@ button:disabled {
         transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         border: none;
         border-top: 1px solid rgba(255,255,255,0.4);
+        z-index: 9999;
     }
     
     .plan-cart.collapsed {

@@ -1607,6 +1607,9 @@ window.openDetailModal = async function(spotId) {
             </div>
         </div>
         </div>
+        <div style="margin-bottom: 10px;">
+            <button id="btn-checkin-${item.id}" onclick="window.handleCheckin('${item.id}')" style="width: 100%; padding: 12px; background: linear-gradient(135deg, #f59e0b, #d97706); color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"><span style="font-size: 18px;">📍</span> 現在地でチェックインしてバッジ獲得！</button>
+        </div>
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
             <button class="btn-add-cart-large" style="flex: 1;" onclick="addToCart('${item.id}', event); document.getElementById('detail-modal-close').click();">＋ このスポットをプランに追加</button>
             <a href="${item.website ? item.website : 'https://www.google.com/search?q=' + encodeURIComponent(item.name + ' ' + (item.prefecture || ''))}" target="_blank" class="btn-add-cart-large" style="flex: 1; text-align: center; background: #0f172a; text-decoration: none;">
@@ -2171,3 +2174,160 @@ function renderSavedAIItinerary(data) {
         renderPrefecture(currentPrefecture); // 再描画してフィルタ適用
     });
 })();
+
+// Gamification: Check-in Logic
+window.handleCheckin = async function(spotId) {
+    const item = window.allSpotsLookup[spotId];
+    if (!item) return;
+
+    if (!window.supabase) {
+        window.showToast("データベース接続エラー", "error");
+        return;
+    }
+
+    const { data: { session } } = await window.supabase.auth.getSession();
+    if (!session) {
+        window.showToast("チェックインするにはログインが必要です", "error");
+        const loginModal = document.getElementById('login-modal');
+        if (loginModal) loginModal.style.display = "flex";
+        return;
+    }
+
+    if (!navigator.geolocation) {
+        window.showToast("お使いのブラウザは位置情報に対応していません", "error");
+        return;
+    }
+
+    if (!item.coordinate) {
+        window.showToast("このスポットは位置情報データがないためチェックインできません", "error");
+        return;
+    }
+    const [targetLat, targetLng] = item.coordinate.split(",").map(Number);
+
+    const btn = document.getElementById(`btn-checkin-${spotId}`);
+    const originalText = btn.innerHTML;
+    btn.innerHTML = "⏳ 位置情報を取得中...";
+    btn.disabled = true;
+
+    navigator.geolocation.getCurrentPosition(async (position) => {
+        const userLat = position.coords.latitude;
+        const userLng = position.coords.longitude;
+        
+        const distance = window.calculateDistance(userLat, userLng, targetLat, targetLng);
+        
+        // 500m以内
+        if (distance <= 0.5) {
+            try {
+                // Check if already checked in
+                const { data: existing, error: errCheck } = await window.supabase
+                    .from('checkins')
+                    .select('id')
+                    .eq('user_id', session.user.id)
+                    .eq('spot_id', spotId);
+                    
+                if (existing && existing.length > 0) {
+                    window.showToast("すでにこのスポットにチェックイン済みです！", "info");
+                    btn.innerHTML = "🏆 チェックイン済み";
+                    btn.style.background = "#fbbf24";
+                    btn.style.color = "#854d0e";
+                    return;
+                }
+                
+                const { data, error } = await window.supabase.from('checkins').insert([
+                    { user_id: session.user.id, spot_id: spotId, lat: userLat, lng: userLng }
+                ]);
+                
+                if (error) throw error;
+                
+                window.showToast(`🎉 「${item.name}」にチェックインしました！`, "success", "バッジ獲得！");
+                window.launchConfetti();
+                
+                btn.innerHTML = "🏆 チェックイン済み";
+                btn.style.background = "#fbbf24";
+                btn.style.color = "#854d0e";
+                
+            } catch (e) {
+                console.error(e);
+                window.showToast("通信エラーが発生しました", "error");
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        } else {
+            window.showToast(`現在地がスポットから離れすぎています (距離: 約${Math.round(distance*1000)}m)\\n※半径500m以内でチェックイン可能です`, "error", "エラー");
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    }, (error) => {
+        console.error(error);
+        window.showToast("位置情報の取得に失敗しました。スマホの設定でブラウザのGPS利用を許可してください。", "error");
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }, {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0
+    });
+}
+
+window.calculateDistance = function(lat1, lon1, lat2, lon2) {
+    const R = 6371; 
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = 
+        Math.sin(dLat/2) * Math.sin(dLat/2) +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+        Math.sin(dLon/2) * Math.sin(dLon/2); 
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+    return R * c;
+}
+
+window.launchConfetti = function() {
+    const overlay = document.createElement("div");
+    overlay.style.position = "fixed";
+    overlay.style.top = "0";
+    overlay.style.left = "0";
+    overlay.style.width = "100%";
+    overlay.style.height = "100%";
+    overlay.style.pointerEvents = "none";
+    overlay.style.zIndex = "99999";
+    document.body.appendChild(overlay);
+    
+    for (let i = 0; i < 40; i++) {
+        const emoji = document.createElement("div");
+        emoji.innerHTML = ["🎉", "✨", "🏆", "🌟", "🎌", "🗺️"][Math.floor(Math.random()*6)];
+        emoji.style.position = "absolute";
+        emoji.style.left = Math.random() * 100 + "%";
+        emoji.style.top = "-50px";
+        emoji.style.fontSize = (Math.random() * 24 + 20) + "px";
+        emoji.style.transition = "transform 2.5s ease-in, top 2.5s ease-in, opacity 2.5s ease-in";
+        overlay.appendChild(emoji);
+        
+        setTimeout(() => {
+            emoji.style.top = (window.innerHeight + 100) + "px";
+            emoji.style.transform = `rotate(${Math.random() * 720}deg) translateX(${Math.random() * 200 - 100}px)`;
+            emoji.style.opacity = "0";
+        }, 50);
+    }
+    
+    setTimeout(() => document.body.removeChild(overlay), 2600);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    // Mobile search toggle logic
+    const searchToggleBtn = document.getElementById("mobile-search-toggle");
+    if (searchToggleBtn) {
+        searchToggleBtn.addEventListener("click", () => {
+            const panel = document.getElementById("header-search-panel");
+            if (panel) {
+                panel.classList.toggle("expanded");
+                if (panel.classList.contains("expanded")) {
+                    searchToggleBtn.innerHTML = "✕ 閉じる";
+                    searchToggleBtn.style.background = "rgba(255,255,255,0.2)";
+                } else {
+                    searchToggleBtn.innerHTML = "🔍 検索";
+                    searchToggleBtn.style.background = "rgba(255,255,255,0.1)";
+                }
+            }
+        });
+    }
+});

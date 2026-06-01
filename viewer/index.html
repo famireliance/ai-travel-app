@@ -44,14 +44,15 @@
                     </div>
                     
                     <div class="toolbar-right">
+                        <button id="mobile-search-toggle" class="btn" style="padding: 6px 10px; background: rgba(255,255,255,0.1); border: 1px solid var(--card-border); color: #fff; border-radius: 8px; font-size: 13px; display: none;">🔍 検索</button>
                         <button id="view-toggle-btn" class="view-toggle-btn">
-                            <span class="view-icon">🗺</span> マップ表示
+                            <span class="view-icon">🗺</span> マップ
                         </button>
-                        <button id="auth-btn" class="btn" style="margin-left: 10px; border: 1px solid var(--primary); color: var(--primary); background: transparent;">ログイン / 登録</button>
+                        <button id="auth-btn" class="btn" style="margin-left: 5px; border: 1px solid var(--primary); color: var(--primary); background: transparent; padding: 6px 10px;">ログイン</button>
                     </div>
                 </div>
                 
-                <div class="header-bottom">
+                <div class="header-bottom" id="header-search-panel">
                     <div class="toolbar-left" style="display: flex; gap: 8px; align-items: center; flex: 1;">
                         <input type="text" id="keyword-search" placeholder="🔍 ワードで検索..." class="compact-input" style="flex: 1;">
                         <button id="btn-city-filter-open" class="btn" style="padding: 8px 16px; font-size: 13px; border-radius: 20px; border: 1.5px solid var(--primary); background: #eff6ff; color: var(--primary); font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(59,130,246,0.15); display: flex; align-items: center; gap: 6px; white-space: nowrap; transition: all 0.2s;">
