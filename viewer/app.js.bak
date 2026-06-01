@@ -1,0 +1,1339 @@
+let map = null;
+let markers = [];
+let infoWindow = null;
+let isMapView = false;
+
+window.initMap = function() {
+    map = new google.maps.Map(document.getElementById("map-container"), {
+        center: { lat: 35.681236, lng: 139.767125 }, // Default Tokyo
+        zoom: 5,
+        mapTypeControl: false,
+        streetViewControl: false,
+    });
+    infoWindow = new google.maps.InfoWindow();
+};
+
+function renderMapMarkers(items, autoFit = false) {
+    if (!map) return;
+    
+    // Clear existing markers
+    markers.forEach(m => m.setMap(null));
+    markers = [];
+    
+    if (items.length === 0) return;
+
+    const bounds = new google.maps.LatLngBounds();
+    let hasCoords = false;
+
+    items.forEach(item => {
+        if (!item.coordinate) return;
+        const [lat, lng] = item.coordinate.split(',').map(Number);
+        const position = { lat, lng };
+        
+        const marker = new google.maps.Marker({
+            position,
+            map,
+            title: item.name,
+            animation: google.maps.Animation.DROP
+        });
+        
+        bounds.extend(position);
+        hasCoords = true;
+        
+        marker.addListener("click", () => {
+            const imgUrl = item.custom_photo_url || item.google_photo_ref ? `https://places.googleapis.com/v1/${item.google_photo_ref}/media?key=AIzaSyCmQvjatyqmFo4KgQBYmu6OaT5y-8iiXrY&maxWidthPx=400` : "data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='500' height='300' viewBox='0 0 500 300' fill='%23f1f5f9'%3E%3Crect width='500' height='300' fill='%23f1f5f9'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='24' font-weight='bold' fill='%2394a3b8'%3ENO IMAGE%3C/text%3E%3C/svg%3E";
+            const mapsLink = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.name + ' ' + (item.prefecture || ''))}`;
+            const descText = item.description ? (item.description.length > 80 ? item.description.substring(0, 80) + '...' : item.description) : '説明文がありません。';
+            const content = `
+                <div class="info-window-content">
+                    <img src="${imgUrl}" onerror="this.onerror=null; this.src='data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='500' height='300' viewBox='0 0 500 300' fill='%23f1f5f9'%3E%3Crect width='500' height='300' fill='%23f1f5f9'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='24' font-weight='bold' fill='%2394a3b8'%3ENO IMAGE%3C/text%3E%3C/svg%3E'" alt="Photo">
+                    ${item.type ? `<span class="info-tag">${item.type}</span>` : ''}
+                    <h4>${item.name}</h4>
+                    <p class="info-subtitle" style="font-size: 11px; color: #94a3b8; margin: 0 0 8px 0;">📍 ${item.prefecture || ''} ${item.city || ''}</p>
+                    <p class="info-desc">${descText}</p>
+                    <div class="info-actions">
+                        <button class="btn-add-cart-map" onclick="addToCart('${item.id}', event); infoWindow.close();">＋ プランに追加</button>
+                        <button style="width: 100%; padding: 8px 12px; background: #e2e8f0; color: #475569; border: none; border-radius: 8px; font-size: 13px; font-weight: bold; cursor: pointer; margin-top: -4px;" onclick="window.openDetailModal('${item.id}'); infoWindow.close();">🔍 詳細と写真を見る</button>
+                        <a href="${mapsLink}" target="_blank" class="info-link" style="display: block; text-align: center;">🗺 Google Mapsで見る</a>
+                    </div>
+                </div>
+            `;
+            infoWindow.setContent(content);
+            infoWindow.open(map, marker);
+        });
+        
+        markers.push(marker);
+    });
+    
+    if (hasCoords) {
+        map.fitBounds(bounds);
+        // Prevent zooming in too much for a single marker
+        const listener = google.maps.event.addListener(map, "idle", function() {
+            if (map.getZoom() > 14) map.setZoom(14);
+            google.maps.event.removeListener(listener);
+        });
+    }
+}
+
+let isPremium = false;
+let currentPrefecture = "東京都";
+let currentCityFilter = "all";
+let currentIslandGroup = null;
+let userLocation = null;
+let currentTab = "spots-grid";
+let activeModalSpot = null;
+
+// マイプラン（カート）機能
+let cartItems = [];
+window.allSpotsLookup = {}; // IDからスポット情報を引けるようにする辞書
+
+const PREFECTURES = [
+    "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
+    "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県",
+    "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県",
+    "静岡県", "愛知県", "三重県", "滋賀県", "京都府", "大阪府", "兵庫県",
+    "奈良県", "和歌山県", "鳥取県", "島根県", "岡山県", "広島県", "山口県",
+    "徳島県", "香川県", "愛媛県", "高知県", "福岡県", "佐賀県", "長崎県",
+    "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県"
+];
+
+const ISLAND_GROUP_ORDER = [
+    "利尻・礼文・サロベツ", "天売・焼尻島", "奥尻島", 
+    "塩釜・松島諸島", 
+    "佐渡島・粟島", 
+    "伊豆諸島", "小笠原諸島", 
+    "鳥羽・志摩的離島", 
+    "隠岐諸島", 
+    "小豆島・直島・瀬戸内海", "しまなみ海道・忽那諸島", "周防大島・萩諸島", 
+    "糸島・玄界灘", "唐津の離島", "壱岐・対馬", "五島列島", 
+    "天草諸島", 
+    "甑島列島", "屋久島・種子島", "トカラ列島・三島村", "奄美群島", 
+    "沖縄本島周辺離島", "慶良間諸島", "久米島・粟国諸島", "宮古諸島", "八重山諸島"
+];
+
+// Utility: Haversine distance
+function getDistanceInKm(lat1, lon1, lat2, lon2) {
+    const R = 6371; 
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+    return R * c;
+}
+
+// Utility: Extract City
+function extractCity(item) {
+    if (item.island_name) {
+        return item.island_name; // 島の情報を最優先
+    }
+    if (item.address) {
+        const match = item.address.match(/(?:都|道|府|県)([^\s、。0-9A-Za-z]{1,12}[市区町村])/);
+        if (match && match[1]) return match[1];
+    }
+    if (item.description) {
+        const match = item.description.match(/(?:都|道|府|県)([一-龠ぁ-んァ-ヶ]{1,10}[市区町村])/);
+        if (match && match[1]) return match[1];
+    }
+    return "その他";
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+    setupTabs();
+    setupToolbar();
+    
+    // Load Data
+    try {
+        const response = await fetch(`../hybrid_tourism_data.json?t=${new Date().getTime()}`);
+        const data = await response.json();
+        tourismData = data.prefectures_data;
+        
+        // Build allGlobalSpots
+        window.allGlobalSpots = [];
+        const cats = ['spots', 'gourmet', 'souvenirs', 'onsen', 'temples', 'landmarks', 'hotels', 'shops', 'transport'];
+    let allItems = [];
+        for (const pref in data.prefectures_data) {
+            cats.forEach(c => {
+                if(data.prefectures_data[pref][c]) {
+                    data.prefectures_data[pref][c].forEach(spot => {
+                        spot.prefecture = pref;
+                        window.allGlobalSpots.push(spot);
+                    });
+                }
+            });
+        }
+        for (const island in data.islands_data) {
+            cats.forEach(c => {
+                if(data.islands_data[island][c]) {
+                    data.islands_data[island][c].forEach(spot => {
+                        spot.prefecture = "離島: " + island;
+                        window.allGlobalSpots.push(spot);
+                    });
+                }
+            });
+        }
+        
+        initSidebar(); 
+        renderPrefecture(currentPrefecture);
+    } catch (error) {
+        console.error("Failed to load data:", error);
+    }
+
+    // カートイベント登録
+    const cartToggle = document.getElementById("cart-toggle");
+    if (cartToggle) {
+        cartToggle.addEventListener("click", () => {
+            const cart = document.getElementById("my-plan-cart");
+            cart.classList.toggle("collapsed");
+        });
+    }
+
+    const routeBtn = document.getElementById("btn-route-map");
+    if (routeBtn) routeBtn.addEventListener("click", generateRouteMap);
+
+    const aiBtn = document.getElementById("btn-ai-itinerary");
+    if (aiBtn) aiBtn.addEventListener("click", generateAIItinerary);
+    
+    const modalClose = document.getElementById("itinerary-close");
+    if (modalClose) {
+        modalClose.addEventListener("click", () => {
+            document.getElementById("itinerary-modal").classList.remove("active");
+        });
+    }
+
+    // スポット詳細モーダルの閉じる処理
+    const spotModal = document.getElementById("spot-modal");
+    const spotModalClose = spotModal.querySelector(".modal-close");
+    
+    if (spotModalClose) {
+        spotModalClose.addEventListener("click", () => {
+            closeModal();
+        });
+    }
+    
+    if (spotModal) {
+        spotModal.addEventListener("click", (e) => {
+            closeModal(e);
+        });
+    }
+
+    // プレミアムPaywallモーダルのイベント
+    const paywallModal = document.getElementById("paywall-modal");
+    const paywallClose = document.getElementById("paywall-close");
+    const btnUnlockDemo = document.getElementById("btn-unlock-demo");
+    const btnSubscribe = document.getElementById("btn-subscribe");
+    
+    if (paywallClose) {
+        paywallClose.addEventListener("click", () => {
+            paywallModal.classList.remove("active");
+        });
+    }
+    
+    if (btnUnlockDemo) {
+        btnUnlockDemo.addEventListener("click", () => {
+            isPremium = true;
+            paywallModal.classList.remove("active");
+            alert("【デモモード】プレミアム機能がアンロックされました！\nリアルな最適ルート生成とAI旅程がご利用いただけます。");
+        });
+    }
+
+    if (btnSubscribe) {
+        btnSubscribe.addEventListener("click", () => {
+            alert("※こちらはデモ画面です。実際の決済システム（Stripe等）と連携可能です。");
+        });
+    }
+});
+    
+
+    const btnGetLoc = document.getElementById("btn-get-location");
+    if (btnGetLoc) {
+        btnGetLoc.addEventListener("click", () => {
+            if (!navigator.geolocation) {
+                alert("お使いのブラウザは現在地取得に対応していません。");
+                return;
+            }
+            btnGetLoc.textContent = "⌛";
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    const lat = pos.coords.latitude;
+                    const lng = pos.coords.longitude;
+                    document.getElementById("route-origin").value = `${lat},${lng}`;
+                    btnGetLoc.textContent = "📍";
+                },
+                (err) => {
+                    alert("現在地を取得できませんでした。");
+                    btnGetLoc.textContent = "📍";
+                }
+            );
+        });
+    }
+
+function initSidebar() {
+    const list = document.getElementById("pref-list");
+    const islandsList = document.getElementById("islands-list");
+    const search = document.getElementById("pref-search");
+    
+    const islandGroupsMap = {};
+    const islandToPref = {};
+    PREFECTURES.forEach(pref => {
+        const data = tourismData[pref];
+        if (data) {
+            const allItems = [
+                ...(data.spots || []), 
+                ...(data.gourmet || []), 
+                ...(data.souvenirs || []),
+                ...(data.hotels || []),
+                ...(data.shops || []),
+                ...(data.transport || [])
+            ];
+            allItems.forEach(item => {
+                if (item.island_group) {
+                    if (!islandGroupsMap[item.island_group]) {
+                        islandGroupsMap[item.island_group] = new Set();
+                    }
+                    const city = extractCity(item);
+                    if (city && city !== "その他") {
+                        islandGroupsMap[item.island_group].add(city);
+                    }
+                    islandToPref[item.island_group] = pref;
+                }
+            });
+        }
+    });
+    
+    function renderList(filter = "") {
+        list.innerHTML = "";
+        PREFECTURES.filter(p => p.includes(filter)).forEach(pref => {
+            const li = document.createElement("li");
+            li.className = `pref-item ${pref === currentPrefecture && !currentIslandGroup ? 'active' : ''}`;
+            li.textContent = pref;
+            li.onclick = () => {
+                document.querySelectorAll(".pref-item").forEach(el => el.classList.remove("active"));
+                li.classList.add("active");
+                currentPrefecture = pref;
+                currentIslandGroup = null;
+                currentCityFilter = "all";
+                renderPrefecture(pref);
+            };
+            list.appendChild(li);
+        });
+
+        if (islandsList) {
+            islandsList.innerHTML = "";
+            ISLAND_GROUP_ORDER.forEach(group => {
+                if (!islandGroupsMap[group]) return;
+                if (filter && !group.includes(filter)) return;
+                
+                const groupLi = document.createElement("li");
+                groupLi.className = `pref-item ${group === currentIslandGroup && currentCityFilter === "all" ? 'active' : ''}`;
+                groupLi.textContent = group;
+                groupLi.onclick = () => {
+                    document.querySelectorAll(".pref-item").forEach(el => el.classList.remove("active"));
+                    groupLi.classList.add("active");
+                    currentPrefecture = islandToPref[group];
+                    currentIslandGroup = group;
+                    currentCityFilter = "all";
+                    
+
+                    renderPrefecture(currentPrefecture);
+                };
+                islandsList.appendChild(groupLi);
+                
+                const cities = Array.from(islandGroupsMap[group]).sort();
+                if (cities.length > 1) {
+                    cities.forEach(city => {
+                        const cityLi = document.createElement("li");
+                        cityLi.className = `pref-item sub-item ${group === currentIslandGroup && currentCityFilter === city ? 'active' : ''}`;
+                        cityLi.textContent = " └ " + city;
+                        cityLi.onclick = () => {
+                            document.querySelectorAll(".pref-item").forEach(el => el.classList.remove("active"));
+                            cityLi.classList.add("active");
+                            currentPrefecture = islandToPref[group];
+                            currentIslandGroup = group;
+                            currentCityFilter = city;
+                            renderPrefecture(currentPrefecture);
+                        };
+                        islandsList.appendChild(cityLi);
+                    });
+                }
+            });
+        }
+    }
+    renderList();
+    search.addEventListener("input", (e) => renderList(e.target.value));
+}
+
+function setupTabs() {
+    const tabs = document.querySelectorAll(".tab-btn");
+    tabs.forEach(tab => {
+        tab.addEventListener("click", () => {
+            tabs.forEach(t => t.classList.remove("active"));
+            tab.classList.add("active");
+            const target = tab.getAttribute("data-target");
+            document.querySelectorAll(".data-grid").forEach(grid => grid.classList.remove("active"));
+            document.getElementById(`${target}-grid`).classList.add("active");
+            const data = tourismData[currentPrefecture] || window.currentGlobalData;
+            if (isMapView && data) {
+                if (target === "all") {
+                    let allItems = [];
+                    Object.values(data).forEach(arr => {
+                        if (Array.isArray(arr)) allItems = allItems.concat(arr);
+                    });
+                    renderMapMarkers(processItems(allItems));
+                } else if (data[target]) {
+                    renderMapMarkers(processItems(data[target]));
+                }
+            }
+        });
+    });
+}
+
+function setupToolbar() {
+    document.getElementById("city-filter").addEventListener("change", (e) => {
+        currentCityFilter = e.target.value;
+        renderPrefecture(currentPrefecture);
+    });
+
+    
+    const viewToggleBtn = document.getElementById("view-toggle-btn");
+    const dataWrapper = document.getElementById("data-wrapper");
+    const mapContainer = document.getElementById("map-container");
+
+    if (viewToggleBtn) {
+        viewToggleBtn.addEventListener("click", () => {
+            isMapView = !isMapView;
+            const contentArea = document.querySelector(".content-area");
+            if (isMapView) {
+                viewToggleBtn.classList.add("active");
+                viewToggleBtn.innerHTML = '<span class="view-icon">📋</span> リスト表示';
+                contentArea.classList.add("map-active");
+                
+                // dataWrapper remains visible but styled via CSS class .map-active
+                dataWrapper.style.display = ""; 
+                mapContainer.style.display = "block";
+                
+                // Collect currently active items based on active tab
+                const activeTab = document.querySelector(".tab-btn.active");
+                const targetCat = activeTab ? activeTab.getAttribute("data-target") : "spots";
+                
+                const data = tourismData[currentPrefecture] || window.currentGlobalData;
+                if (data) {
+                    if (targetCat === "all") {
+                        let allItems = [];
+                        Object.values(data).forEach(arr => {
+                            if (Array.isArray(arr)) allItems = allItems.concat(arr);
+                        });
+                        renderMapMarkers(processItems(allItems));
+                    } else if (data[targetCat]) {
+                        renderMapMarkers(processItems(data[targetCat]));
+                    }
+                }
+            } else {
+                viewToggleBtn.classList.remove("active");
+                viewToggleBtn.innerHTML = '<span class="view-icon">🗺</span> マップ表示';
+                contentArea.classList.remove("map-active");
+                
+                mapContainer.style.display = "none";
+                dataWrapper.style.display = ""; // Fallback to normal
+            }
+        });
+    }
+
+    const gpsBtn = document.getElementById("gps-btn");
+
+    const sortByLocationBtn = document.getElementById("sort-by-location-btn");
+    const baseLocationInput = document.getElementById("base-location-input");
+
+    if (sortByLocationBtn && baseLocationInput) {
+        sortByLocationBtn.addEventListener("click", () => {
+            const address = baseLocationInput.value.trim();
+            if (!address) {
+                alert("基準となる場所を入力してください（例：別府駅）");
+                return;
+            }
+            
+            if (!window.google || !window.google.maps) {
+                alert("Google Maps APIが読み込まれていません。リロードしてください。");
+                return;
+            }
+            
+            const geocoder = new google.maps.Geocoder();
+            geocoder.geocode({ address: address }, (results, status) => {
+                if (status === "OK" && results[0]) {
+                    const lat = results[0].geometry.location.lat();
+                    const lng = results[0].geometry.location.lng();
+                    userLocation = { lat, lng };
+                    renderPrefecture(currentPrefecture);
+                } else {
+                    alert("場所が見つかりませんでした。別のキーワードでお試しください。");
+                }
+            });
+        });
+        
+        baseLocationInput.addEventListener("keypress", (e) => {
+            if (e.key === "Enter") {
+                sortByLocationBtn.click();
+            }
+        });
+    }
+
+    gpsBtn.addEventListener("click", () => {
+        if (userLocation) {
+            userLocation = null;
+            gpsBtn.classList.remove("active");
+            gpsBtn.innerHTML = '<span class="gps-icon">📍</span> 現在地から近い順';
+            renderPrefecture(currentPrefecture);
+            return;
+        }
+
+        gpsBtn.innerHTML = '🔄 取得中...';
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+                gpsBtn.classList.add("active");
+                gpsBtn.innerHTML = '<span class="gps-icon">📍</span> 解除する';
+                renderPrefecture(currentPrefecture);
+            },
+            () => {
+                alert("位置情報を取得できませんでした。");
+                gpsBtn.innerHTML = '<span class="gps-icon">📍</span> 現在地から近い順';
+            }
+        );
+    });
+}
+
+function processItems(items) {
+    items.forEach(item => {
+        item.city = extractCity(item);
+        if (userLocation && item.coordinate) {
+            const [lat, lng] = item.coordinate.split(',').map(Number);
+            item.distance = getDistanceInKm(userLocation.lat, userLocation.lng, lat, lng);
+        } else {
+            item.distance = null;
+        }
+    });
+
+    let filtered = items;
+
+    const kw = document.getElementById("keyword-search").value.trim().toLowerCase();
+    if (kw) {
+        filtered = filtered.filter(i => {
+            const name = (i.name || "").toLowerCase();
+            const desc = (i.description || "").toLowerCase();
+            return name.includes(kw) || desc.includes(kw);
+        });
+    }
+
+    const isGlobal = document.getElementById("keyword-search").value.trim() !== "";
+    if (!isGlobal && currentIslandGroup) filtered = filtered.filter(item => item.island_group === currentIslandGroup);
+    if (!isGlobal && currentCityFilter !== "all") filtered = filtered.filter(item => extractCity(item) === currentCityFilter);
+
+    filtered.sort((a, b) => {
+        if (userLocation) {
+            const distA = a.distance !== null ? a.distance : 99999;
+            const distB = b.distance !== null ? b.distance : 99999;
+            return distA - distB;
+        } else {
+            return (b.rating || 0) - (a.rating || 0);
+        }
+    });
+    return filtered;
+}
+
+function renderPrefecture(pref) {
+    const data = tourismData[pref];
+    if (!data) return;
+
+    let headerText = currentIslandGroup ? currentIslandGroup : pref;
+    if (currentIslandGroup && currentCityFilter !== "all") headerText = currentCityFilter;
+    document.getElementById("current-pref").textContent = headerText;
+    
+    const categories = ['spots', 'gourmet', 'souvenirs', 'hotels', 'shops', 'transport', 'onsen', 'temples', 'landmarks'];
+    const allItems = [];
+    categories.forEach(cat => { if (data[cat]) allItems.push(...data[cat]); });
+    
+    allItems.forEach(item => { window.allSpotsLookup[item.id] = item; });
+
+    const baseItems = currentIslandGroup ? allItems.filter(i => i.island_group === currentIslandGroup) : allItems;
+    const citySet = new Set();
+    baseItems.forEach(i => citySet.add(extractCity(i)));
+    
+    const citySelect = document.getElementById("city-filter");
+    citySelect.innerHTML = '<option value="all">すべての市区町村</option>';
+    Array.from(citySet).sort().forEach(city => {
+        const option = document.createElement("option");
+        option.value = city;
+        option.textContent = city;
+        if (city === currentCityFilter) option.selected = true;
+        citySelect.appendChild(option);
+    });
+
+    if (currentCityFilter !== "all" && !citySet.has(currentCityFilter)) {
+        currentCityFilter = "all";
+        citySelect.value = "all";
+    }
+
+    categories.forEach(cat => {
+        renderGrid(`${cat}-grid`, processItems(data[cat] || []), `${cat}が見つかりません`);
+    });
+    
+    // Render "All" grid
+    renderGrid('all-grid', processItems(allItems), 'スポットが見つかりません');
+    
+    // Add event listener to keyword search if not added
+    if (!window.keywordSearchBound) {
+        document.getElementById('keyword-search').addEventListener('input', () => {
+            const kw = document.getElementById('keyword-search').value.trim().toLowerCase();
+       const mapSupabaseData = (spots) => {
+    let result = { spots: [], gourmet: [], souvenirs: [], onsen: [], temples: [], landmarks: [], hotels: [], shops: [], transport: [] };
+    spots.forEach(item => {
+        let t = item.type || "";
+        if (t.includes("神社") || t.includes("寺") || t.includes("神宮") || t.includes("仏閣") || t.includes("大社")) result.temples.push(item);
+        else if (t.includes("グルメ") || t.includes("食事") || t.includes("レストラン") || t.includes("カフェ") || t.includes("麺類") || t.includes("肉料理")) result.gourmet.push(item);
+        else if (t.includes("土産") || t.includes("市場")) result.souvenirs.push(item);
+        else if (t.includes("温泉") || t.includes("湯")) result.onsen.push(item);
+        else if (t.includes("名所") || t.includes("ランドマーク") || t.includes("公園") || t.includes("城") || t.includes("山") || t.includes("岬") || t.includes("自然")) result.landmarks.push(item);
+        else if (t.includes("ホテル") || t.includes("旅館") || t.includes("宿泊")) result.hotels.push(item);ById('city-filter').style.display = "inline-block";
+                if (currentPrefecture) renderPrefecture(currentPrefecture);
+            }
+        });
+        window.keywordSearchBound = true;
+    }
+}
+
+function renderGlobalSearch(kw) {
+    document.getElementById("current-pref").textContent = `「${kw}」の全国検索結果`;
+    document.getElementById("city-filter").style.display = "none";
+    
+    const categories = ['spots', 'gourmet', 'souvenirs', 'hotels', 'shops', 'transport', 'onsen', 'landmarks'];
+    const filteredGlobal = window.allGlobalSpots.filter(i => {
+        const name = (i.name || "").toLowerCase();
+        const desc = (i.description || "").toLowerCase();
+        return name.includes(kw) || desc.includes(kw);
+    });
+    
+    const dataByCat = {};
+    categories.forEach(c => dataByCat[c] = []);
+    
+    filteredGlobal.forEach(i => {
+        let matched = false;
+        if(i.type === "観光地") { dataByCat.spots.push(i); matched = true; }
+        if(i.type === "グルメ") { dataByCat.gourmet.push(i); matched = true; }
+        if(i.type === "お土産") { dataByCat.souvenirs.push(i); matched = true; }
+        if(i.type === "宿泊・ホテル") { dataByCat.hotels.push(i); matched = true; }
+        if(i.type === "商店・スーパー") { dataByCat.shops.push(i); matched = true; }
+        if(i.type === "アクセス情報") { dataByCat.transport.push(i); matched = true; }
+        if(i.type === "温泉") { dataByCat.onsen.push(i); matched = true; }
+        if(i.type === "ランドマーク") { dataByCat.landmarks.push(i); matched = true; }
+        if(!matched) dataByCat.spots.push(i);
+    });
+    
+    categories.forEach(cat => {
+        // processItems internally checks kw again, which is redundant but fine.
+        renderGrid(`${cat}-grid`, processItems(dataByCat[cat]), `${cat}が見つかりません`);
+    });
+    
+    renderGrid('all-grid', processItems(filteredGlobal), 'スポットが見つかりません');
+    
+    if (isMapView) {
+        const activeTab = document.querySelector(".tab-btn.active");
+        const targetCat = activeTab ? activeTab.getAttribute("data-target") : "all";
+        const markersData = targetCat === "all" ? filteredGlobal : dataByCat[targetCat];
+        renderMapMarkers(processItems(markersData), true);
+    }
+
+    if (isMapView) {
+        const activeTab = document.querySelector(".tab-btn.active");
+        const targetCat = activeTab ? activeTab.getAttribute("data-target") : "all";
+        if (targetCat === "all") {
+            renderMapMarkers(processItems(allItems));
+        } else if (data[targetCat]) {
+            renderMapMarkers(processItems(data[targetCat]));
+        }
+    }
+}
+
+function renderGrid(containerId, items, emptyMessage) {
+    const container = document.getElementById(containerId);
+    container.innerHTML = "";
+    if (items.length === 0) {
+        container.innerHTML = `<div class="empty-state">${emptyMessage}</div>`;
+        return;
+    }
+
+    items.forEach(item => {
+        const card = document.createElement("div");
+        card.className = "card";
+        
+        let distanceBadge = item.distance !== null ? `<div class="distance-badge">📍 ${item.distance.toFixed(1)} km</div>` : "";
+        let tagsHtml = (item.tags || []).map(t => `<span class="tag">${t}</span>`).join("");
+        
+        let imageHtml = "";
+        const imgUrl = item.custom_photo_url || item.google_photo_ref ? `https://places.googleapis.com/v1/${item.google_photo_ref}/media?key=AIzaSyCmQvjatyqmFo4KgQBYmu6OaT5y-8iiXrY&maxWidthPx=400` : "data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='500' height='300' viewBox='0 0 500 300' fill='%23f1f5f9'%3E%3Crect width='500' height='300' fill='%23f1f5f9'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='24' font-weight='bold' fill='%2394a3b8'%3ENO IMAGE%3C/text%3E%3C/svg%3E";
+        
+        imageHtml = `
+            <div class="card-img-wrapper">
+                <div class="card-image-container">
+                    <img src="${imgUrl}" alt="${item.name}" loading="lazy" onerror="this.onerror=null; this.src='data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='500' height='300' viewBox='0 0 500 300' fill='%23f1f5f9'%3E%3Crect width='500' height='300' fill='%23f1f5f9'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='24' font-weight='bold' fill='%2394a3b8'%3ENO IMAGE%3C/text%3E%3C/svg%3E'">
+                    <div class="card-badges">${tagsHtml}</div>
+                    <button class="btn-add-cart-float" onclick="addToCart('${item.id}', event)">＋ プランに追加</button>
+                </div>
+            </div>`;
+
+        let prefBadge = `<span style="font-size: 11px; background: #8b5cf6; color: white; padding: 3px 8px; border-radius: 4px; margin-bottom: 6px; display: inline-block; font-weight: bold; box-shadow: 0 1px 2px rgba(0,0,0,0.1);">${item.prefecture || currentPrefecture}</span>`;
+
+        card.innerHTML = `
+            ${imageHtml}
+            <div class="card-body">
+                ${prefBadge}
+                <h3 class="card-title" style="margin-top: 2px;">${item.name}</h3>
+                ${item.rating ? `<div class="card-rating">★ ${item.rating}</div>` : ''}
+            </div>
+        `;
+        
+        card.style.cursor = 'pointer';
+        card.addEventListener('click', (e) => {
+            if (e.target.closest('.btn-add-cart-float')) return;
+            openSpotModal(item);
+        });
+        container.appendChild(card);
+    });
+}
+
+function openSpotModal(item) {
+    const modal = document.getElementById("spot-modal");
+    activeModalSpot = item;
+    
+    // 画像
+    const imgEl = document.getElementById("modal-image");
+    if (item.google_photo_ref) {
+        imgEl.src = `https://places.googleapis.com/v1/${item.google_photo_ref}/media?key=AIzaSyCmQvjatyqmFo4KgQBYmu6OaT5y-8iiXrY&maxWidthPx=800`;
+        imgEl.style.display = "block";
+    } else if (item.imageUrl) {
+        imgEl.src = item.imageUrl;
+        imgEl.style.display = "block";
+    } else {
+        imgEl.style.display = "none";
+    }
+
+    // タグ (AIが生成した tags があれば表示)
+    const tagsContainer = document.getElementById("modal-tags");
+    tagsContainer.innerHTML = "";
+    if (item.tags && Array.isArray(item.tags)) {
+        const colors = ["tag-blue", "tag-green", "tag-orange", "tag-red", "tag-default"];
+        item.tags.forEach((tag, idx) => {
+            const span = document.createElement("span");
+            span.className = `modal-tag ${colors[idx % colors.length]}`;
+            span.textContent = tag;
+            tagsContainer.appendChild(span);
+        });
+    }
+
+    // 基本情報
+    document.getElementById("modal-title").textContent = item.name;
+    document.getElementById("modal-description").textContent = item.description || "説明はありません。";
+    
+    // AI生成の拡張メタデータ
+    document.getElementById("modal-estimated-time").innerHTML = item.estimated_time || "<span style='color:#ccc'>未調査</span>";
+    document.getElementById("modal-budget").innerHTML = item.budget || "<span style='color:#ccc'>未調査</span>";
+    document.getElementById("modal-best-time").innerHTML = item.best_time || "<span style='color:#ccc'>未調査</span>";
+    document.getElementById("modal-transport").innerHTML = item.transport || "<span style='color:#ccc'>未調査</span>";
+    
+    document.getElementById("modal-routing").innerHTML = item.routing || "AI調査中のためデータがありません。";
+    document.getElementById("modal-failure").innerHTML = item.failure_avoidance || "AI調査中のためデータがありません。";
+
+    // アクションボタン
+    const mapBtn = document.getElementById("modal-map-btn");
+    if (item.coordinate) {
+        mapBtn.href = `https://www.google.com/maps/search/?api=1&query=${item.coordinate}`;
+        mapBtn.style.display = "block";
+    } else {
+        mapBtn.style.display = "none";
+    }
+    
+    // 公式サイトボタン
+    let webBtn = document.getElementById("modal-web-btn");
+    if (!webBtn) {
+        webBtn = document.createElement("a");
+        webBtn.id = "modal-web-btn";
+        webBtn.className = "btn btn-primary";
+        webBtn.style.marginLeft = "10px";
+        webBtn.style.background = "#0f172a";
+        webBtn.target = "_blank";
+        const modalActions = modal.querySelector(".modal-actions");
+        modalActions.appendChild(webBtn);
+    }
+    if (item.website) {
+        webBtn.href = item.website;
+        webBtn.textContent = "🌐 公式サイト";
+    } else {
+        webBtn.href = `https://www.google.com/search?q=${encodeURIComponent(item.name + ' ' + (item.prefecture || ''))}`;
+        webBtn.textContent = "🔍 ネットで検索";
+    }
+
+    // カート追加ボタンの更新
+    const modalActions = modal.querySelector(".modal-actions");
+    let addBtn = document.getElementById("modal-add-cart-btn");
+    if (!addBtn) {
+        addBtn = document.createElement("button");
+        addBtn.id = "modal-add-cart-btn";
+        addBtn.className = "btn-primary";
+        addBtn.style.marginLeft = "10px";
+        modalActions.appendChild(addBtn);
+    }
+    addBtn.onclick = () => addToCart(item.id);
+    addBtn.textContent = cartItems.find(i => i.id === item.id) ? "✓ 追加済み" : "＋ プランに追加";
+
+    modal.classList.add("active");
+}
+
+function closeModal(e) {
+    if (e) {
+        if (e.target.closest('.modal-content') && !e.target.closest('.modal-close')) return;
+    }
+    const modal = document.getElementById("spot-modal");
+    modal.classList.remove("active");
+    activeModalSpot = null;
+}
+
+window.addToCart = function(spotId, event) {
+    if (event) event.stopPropagation();
+    const spot = window.allSpotsLookup[spotId];
+    if (!spot) return;
+    if (!spot.coordinate) {
+        alert("このスポットには位置情報（座標）データがないため、マップでのルート検索を考慮してプランには追加できません。");
+        return;
+    }
+    if (cartItems.find(i => i.id === spot.id)) {
+        alert("すでに追加されています！");
+        return;
+    }
+    cartItems.push(spot);
+    renderCart();
+    const cart = document.getElementById("my-plan-cart");
+    if (cart.classList.contains("collapsed")) cart.classList.remove("collapsed");
+};
+
+window.removeFromCart = function(spotId) {
+    cartItems = cartItems.filter(i => i.id !== spotId);
+    renderCart();
+};
+
+function renderCart() {
+    const list = document.getElementById("cart-items-list");
+    const count = document.getElementById("cart-count");
+    const routeBtn = document.getElementById("btn-route-map");
+    const aiBtn = document.getElementById("btn-ai-itinerary");
+    
+    count.textContent = cartItems.length;
+    if (cartItems.length === 0) {
+        list.innerHTML = `<li class="empty-cart">スポットを追加してプランを作りましょう！</li>`;
+        routeBtn.disabled = true;
+        aiBtn.disabled = true;
+        return;
+    }
+    routeBtn.disabled = false;
+    aiBtn.disabled = false;
+    list.innerHTML = cartItems.map((item, index) => `
+        <li>
+            <div class="cart-item-info">
+                <span class="cart-item-number">${index + 1}</span>
+                <span>${item.name}</span>
+            </div>
+            <button class="cart-item-remove" onclick="removeFromCart('${item.id}')">&times;</button>
+        </li>
+    `).join("");
+}
+
+function getDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2)**2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+async function generateRouteMap() {
+    if (cartItems.length === 0) return;
+    
+    if (!isPremium) {
+        document.getElementById("paywall-modal").classList.add("active");
+        return;
+    }
+    
+    const originVal = document.getElementById("route-origin") ? document.getElementById("route-origin").value.trim() : "";
+    let validItems = cartItems.filter(i => i.coordinate);
+    
+    if (originVal) {
+        let isCoord = /^[-+]?([1-8]?\d(\.\d+)?|90(\.0+)?),\s*[-+]?(180(\.0+)?|((1[0-7]\d)|([1-9]?\d))(\.\d+)?)$/.test(originVal);
+        let originSpot = {
+            spot_name: isCoord ? "現在地" : originVal,
+            description: "出発地",
+        };
+        if (isCoord) originSpot.coordinate = originVal;
+        else originSpot.address = originVal;
+        
+        validItems.unshift(originSpot);
+    }
+    if (validItems.length < 2) { alert("ルート最適化には座標情報があるスポットが2つ以上必要です。"); return; }
+
+    const routeBtn = document.getElementById("btn-route-map");
+    const originalText = routeBtn.textContent;
+    routeBtn.textContent = "🔄 最適ルートを計算中...";
+    routeBtn.disabled = true;
+
+    try {
+        const res = await fetch("http://localhost:8000/api/route_optimize", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ spots: validItems })
+        });
+        const data = await res.json();
+        
+        if (res.status === 403) {
+            alert(data.error);
+            return;
+        }
+        if (!res.ok) {
+            throw new Error(data.error || "最適化エラー");
+        }
+
+        let optimizedRoute = [];
+        if (data.finalOrderIndices && data.finalOrderIndices.length > 0) {
+            optimizedRoute = data.finalOrderIndices.map(idx => validItems[idx]);
+        } else {
+            optimizedRoute = [validItems[0]];
+            if (data.optimizedIndex && data.optimizedIndex.length > 0) {
+                const intermediates = validItems.slice(1, -1);
+                for (let idx of data.optimizedIndex) {
+                    optimizedRoute.push(intermediates[idx]);
+                }
+            } else if (validItems.length > 2) {
+                 optimizedRoute.push(...validItems.slice(1, -1));
+            }
+            optimizedRoute.push(validItems[validItems.length - 1]);
+        }
+
+        const getRouteParam = (item) => {
+            if (item.spot_name === "現在地" && item.coordinate) return item.coordinate;
+            return encodeURIComponent(item.name || item.spot_name || item.address || item.coordinate);
+        };
+
+        const origin = getRouteParam(optimizedRoute[0]);
+        const destination = getRouteParam(optimizedRoute[optimizedRoute.length - 1]);
+        let waypoints = optimizedRoute.length > 2 ? "&waypoints=" + optimizedRoute.slice(1, -1).map(getRouteParam).join("|") : "";
+
+        const mapUrl = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypoints}&travelmode=driving`;
+        window.open(mapUrl, "_blank");
+        
+    } catch (e) {
+        alert("ルート最適化に失敗しました: " + e.message);
+    } finally {
+        routeBtn.textContent = originalText;
+        routeBtn.disabled = false;
+    }
+}
+
+async function generateAIItinerary() {
+    if (cartItems.length === 0) return;
+    
+    if (!isPremium) {
+        document.getElementById("paywall-modal").classList.add("active");
+        return;
+    }
+
+    const modal = document.getElementById("itinerary-modal");
+    const timeline = document.getElementById("itinerary-timeline");
+    const title = document.getElementById("itinerary-title");
+    
+    const days = document.getElementById("ai-days").value;
+    const pace = document.getElementById("ai-pace").value;
+    
+    title.textContent = "✨ AIがスケジュールを作成中... ✨";
+    timeline.innerHTML = `<div style="text-align:center; padding:40px;">
+        <div class="ai-loader"></div>
+        <p>AIが一生懸命スケジュールを考えています...</p>
+    </div>`;
+    modal.classList.add("active");
+    
+    const originVal = document.getElementById("route-origin") ? document.getElementById("route-origin").value.trim() : "";
+    let itemsForAI = [...cartItems];
+    
+    if (originVal) {
+        let isCoord = /^[-+]?([1-8]?\d(\.\d+)?|90(\.0+)?),\s*[-+]?(180(\.0+)?|((1[0-7]\d)|([1-9]?\d))(\.\d+)?)$/.test(originVal);
+        let originSpot = {
+            spot_name: isCoord ? "現在地" : originVal,
+            description: "出発地",
+        };
+        if (isCoord) originSpot.coordinate = originVal;
+        else originSpot.address = originVal;
+        
+        itemsForAI.unshift(originSpot);
+    }
+
+    try {
+        const response = await fetch("http://localhost:8000/api/itinerary", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                spots: itemsForAI,
+                days: parseInt(days),
+                pace: pace
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+            if (response.status === 429) {
+                timeline.innerHTML = `<div style="text-align:center; padding:40px; color: #ff0055; font-weight: bold; font-size: 16px;">
+                    <p>⏳ ${data.error}</p>
+                </div>`;
+            } else {
+                timeline.innerHTML = `<div style="text-align:center; padding:40px; color: red;">エラーが発生しました: ${data.error}</div>`;
+            }
+            return;
+        }
+
+        title.textContent = data.title || "✨ あなただけの特別な旅程 ✨";
+        let html = data.description ? `<p style="text-align:center; color:#475569; margin-bottom:30px;">${data.description}</p>` : "";
+        
+        if (data.itinerary) {
+            data.itinerary.forEach(dayPlan => {
+                html += `<div class="timeline-day">`;
+                html += `<h3>Day ${dayPlan.day} - ${dayPlan.theme || ""}</h3>`;
+                
+                if (dayPlan.plan) {
+                    dayPlan.plan.forEach(item => {
+                        html += `
+                            <div class="timeline-item">
+                                <div class="timeline-time">${item.time}</div>
+                                <div class="timeline-content">
+                                    <div class="timeline-spot">${item.spot}</div>
+                                    <div class="timeline-desc">${item.description}</div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                }
+                html += `</div>`;
+            });
+        }
+        
+        timeline.innerHTML = html;
+        
+    } catch (e) {
+        timeline.innerHTML = `<div style="text-align:center; padding:40px; color: red;">
+            通信エラーが発生しました。<br>サーバーが起動しているか確認してください。<br>${e.message}
+        </div>`;
+    }
+}
+
+// Modal Logic
+window.openDetailModal = async function(spotId) {
+    const item = window.allSpotsLookup[spotId];
+    if (!item) return;
+    
+    const modal = document.getElementById("detail-modal");
+    const body = document.getElementById("detail-modal-body");
+    
+    const defaultImg = "data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='500' height='300' viewBox='0 0 500 300' fill='%23f1f5f9'%3E%3Crect width='500' height='300' fill='%23f1f5f9'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='24' font-weight='bold' fill='%2394a3b8'%3ENO IMAGE%3C/text%3E%3C/svg%3E";
+    let imgUrl = item.custom_photo_url || item.dynamic_photo_url || (item.google_photo_ref ? `https://places.googleapis.com/v1/${item.google_photo_ref}/media?key=AIzaSyCmQvjatyqmFo4KgQBYmu6OaT5y-8iiXrY&maxWidthPx=500` : defaultImg);
+    
+    const mapsLink = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.name + ' ' + (item.prefecture || ''))}`;
+    
+    body.innerHTML = `
+        <img src="${imgUrl}" class="detail-img" id="detail-modal-img" alt="Photo" onerror="this.onerror=null; this.src='${defaultImg}'">
+        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+            ${item.type ? `<span class="info-tag">${item.type}</span>` : ''}
+            ${item.rating ? `<span class="info-tag" style="background:#fef08a;color:#854d0e;">★ ${item.rating}</span>` : ''}
+        </div>
+        <h2>${item.name}</h2>
+        <div class="detail-meta">
+            <span>📍 ${item.prefecture || ''} ${item.city || ''}</span>
+            <a href="${mapsLink}" target="_blank" style="color: #3b82f6; text-decoration: none;">(マップを開く)</a>
+        </div>
+        <div class="detail-desc">
+            ${item.description || '詳細情報はありません。'}
+        </div>
+        <div style="background: #f8fafc; padding: 12px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
+            <div>
+                <div style="font-size: 13px; font-weight: bold; color: #334155;">写真がありませんか？</div>
+                <div style="font-size: 11px; color: #64748b;">※GPS認証が必要です（現地限定）</div>
+            </div>
+            <div>
+                <input type="file" id="photo-upload-input" accept="image/*" style="display: none;" onchange="handlePhotoUpload('${item.id}')">
+                <button id="btn-upload-photo" onclick="document.getElementById('photo-upload-input').click()" style="background: #fff; border: 1px solid #cbd5e1; padding: 6px 12px; border-radius: 16px; font-size: 12px; cursor: pointer; color: #475569; font-weight: bold;">📸 投稿する</button>
+            </div>
+        </div>
+        </div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <button class="btn-add-cart-large" style="flex: 1;" onclick="addToCart('${item.id}', event); document.getElementById('detail-modal-close').click();">＋ このスポットをプランに追加</button>
+            <a href="${item.website ? item.website : 'https://www.google.com/search?q=' + encodeURIComponent(item.name + ' ' + (item.prefecture || ''))}" target="_blank" class="btn-add-cart-large" style="flex: 1; text-align: center; background: #0f172a; text-decoration: none;">
+                ${item.website ? '🌐 公式サイト' : '🔍 ネットで検索'}
+            </a>
+        </div>
+    `;
+    
+    modal.style.display = "flex";
+    // Trigger reflow for animation
+    void modal.offsetWidth;
+    modal.classList.add("active");
+    
+    // Dynamic fetch if no image
+    if (!item.google_photo_ref && !item.dynamic_photo_url) {
+        document.getElementById("detail-modal-img").src = "data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='500' height='300' viewBox='0 0 500 300' fill='%23f1f5f9'%3E%3Crect width='500' height='300' fill='%23f1f5f9'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='bold' fill='%2394a3b8'%3E🔍 写真を取得中...%3C/text%3E%3C/svg%3E";
+        
+        try {
+            const response = await fetch("/api/get_photo_ref", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: item.name,
+                    id: item.id,
+                    prefecture: item.prefecture || ""
+                })
+            });
+            const data = await response.json();
+            if (data.success && data.photo_url) {
+                item.dynamic_photo_url = data.photo_url;
+                const imgEl = document.getElementById("detail-modal-img");
+                if (imgEl && document.querySelector("h2").textContent === item.name) {
+                    imgEl.src = data.photo_url;
+                }
+            } else {
+                item.dynamic_photo_url = defaultImg;
+                const imgEl = document.getElementById("detail-modal-img");
+                if (imgEl && document.querySelector("h2").textContent === item.name) {
+                    imgEl.src = defaultImg;
+                }
+            }
+        } catch (e) {
+            console.error("Dynamic fetch via server failed", e);
+        }
+    }
+};
+
+document.addEventListener("DOMContentLoaded", () => {
+    // Add close logic later (must be after body is parsed or use event delegation)
+    document.body.addEventListener("click", (e) => {
+        if (e.target.id === "detail-modal-close" || e.target.id === "detail-modal") {
+            const modal = document.getElementById("detail-modal");
+            modal.classList.remove("active");
+            setTimeout(() => { modal.style.display = "none"; }, 300);
+        }
+    });
+});
+
+// === User Suggestion Logic (ここもいいよ窓) ===
+window.openSuggestModal = function() {
+    document.getElementById("suggest-modal").style.display = "flex";
+    // trigger reflow
+    void document.getElementById("suggest-modal").offsetWidth;
+    document.getElementById("suggest-modal").classList.add("active");
+    // Pre-fill current prefecture
+    document.getElementById("suggest-pref").value = currentPrefecture || "東京都";
+};
+
+window.closeSuggestModal = function() {
+    const modal = document.getElementById("suggest-modal");
+    modal.classList.remove("active");
+    setTimeout(() => { modal.style.display = "none"; }, 300);
+};
+
+window.submitSuggestSpot = async function(event) {
+    event.preventDefault();
+    const btn = document.getElementById("btn-submit-suggest");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = "審査中... (約5秒)";
+    btn.disabled = true;
+    
+    const payload = {
+        name: document.getElementById("suggest-name").value,
+        prefecture: document.getElementById("suggest-pref").value,
+        category: document.getElementById("suggest-category").value,
+        description: document.getElementById("suggest-desc").value
+    };
+    
+    try {
+        const res = await fetch("/api/suggest_spot", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+            alert("審査完了！スポットが追加されました✨");
+            // Add to local data
+            const spot = data.spot;
+            if (!tourismData[spot.prefecture]) {
+                tourismData[spot.prefecture] = { spots: [], gourmet: [], souvenirs: [] };
+            }
+            const cat = spot.type === "グルメ" ? "gourmet" : (spot.type === "お土産" ? "souvenirs" : "spots");
+            tourismData[spot.prefecture][cat].push(spot);
+            
+            // Render again if we are on the same pref
+            if (currentPrefecture === spot.prefecture) {
+                renderPrefecture(currentPrefecture);
+            }
+            closeSuggestModal();
+            event.target.reset(); // clear form
+        } else {
+            alert("審査エラー: " + data.error);
+        }
+    } catch (e) {
+        alert("サーバー通信エラーが発生しました。");
+        console.error(e);
+    }
+    
+    btn.innerHTML = originalText;
+    btn.disabled = false;
+};
+
+document.addEventListener("DOMContentLoaded", () => {
+    document.body.addEventListener("click", (e) => {
+        if (e.target.id === "suggest-modal-close" || e.target.id === "suggest-modal") {
+            closeSuggestModal();
+        }
+    });
+});
+
+// Distance Calculation
+function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+  var R = 6371;
+  var dLat = deg2rad(lat2-lat1);
+  var dLon = deg2rad(lon2-lon1); 
+  var a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * Math.sin(dLon/2) * Math.sin(dLon/2); 
+  var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+  return R * c;
+}
+function deg2rad(deg) { return deg * (Math.PI/180); }
+
+window.handlePhotoUpload = function(spotId) {
+    const item = window.allSpotsLookup[spotId];
+    if (!item || !item.coordinate) {
+        alert("このスポットは座標データがないため、GPS認証ができません。");
+        return;
+    }
+    
+    const fileInput = document.getElementById("photo-upload-input");
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    const btn = document.getElementById("btn-upload-photo");
+    btn.innerHTML = "📍 GPS認証中...";
+    btn.disabled = true;
+
+    if (!navigator.geolocation) {
+        alert("お使いのブラウザはGPSに対応していません。");
+        btn.innerHTML = "📸 写真を投稿";
+        btn.disabled = false;
+        return;
+    }
+
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+        const userLat = pos.coords.latitude;
+        const userLng = pos.coords.longitude;
+        const [spotLat, spotLng] = item.coordinate.split(",").map(Number);
+        
+        const distKm = getDistanceFromLatLonInKm(userLat, userLng, spotLat, spotLng);
+        
+        if (distKm > 0.5) { // 500 meters
+            alert(`GPS認証失敗：現在地がスポットから離れすぎています (距離: 約${Math.round(distKm*1000)}m)。現地にいる場合のみ投稿できます。`);
+            btn.innerHTML = "📸 写真を投稿";
+            btn.disabled = false;
+            return;
+        }
+
+        btn.innerHTML = "⬆️ アップロード中...";
+        
+        // Success GPS, upload file
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("spotId", item.id);
+        formData.append("prefecture", item.prefecture || "");
+        
+        try {
+            const res = await fetch("/api/upload_photo", {
+                method: "POST",
+                body: formData
+            });
+            const data = await res.json();
+            
+            if (data.success) {
+                alert("認証成功＆アップロード完了しました！");
+                item.custom_photo_url = data.photo_url;
+                document.getElementById("detail-modal-img").src = data.photo_url;
+            } else {
+                alert("アップロード失敗: " + data.error);
+            }
+        } catch (e) {
+            console.error(e);
+            alert("通信エラーが発生しました");
+        }
+        
+        btn.innerHTML = "📸 写真を投稿";
+        btn.disabled = false;
+        
+    }, (err) => {
+        alert("GPSの取得に失敗しました。位置情報のアクセスを許可してください。");
+        btn.innerHTML = "📸 写真を投稿";
+        btn.disabled = false;
+    });
+};
+
+// === Island/Area Request Logic ===
+window.openAreaRequestModal = function() {
+    document.getElementById("area-request-modal").style.display = "flex";
+    void document.getElementById("area-request-modal").offsetWidth;
+    document.getElementById("area-request-modal").classList.add("active");
+};
+
+window.closeAreaRequestModal = function() {
+    const modal = document.getElementById("area-request-modal");
+    modal.classList.remove("active");
+    setTimeout(() => { modal.style.display = "none"; }, 300);
+};
+
+window.submitAreaRequest = async function(event) {
+    event.preventDefault();
+    const areaName = document.getElementById("area-request-name").value.trim();
+    if (!areaName) return;
+    
+    closeAreaRequestModal();
+    document.getElementById("ai-loading-overlay").style.display = "flex";
+    
+    try {
+        const res = await fetch("/api/generate_island", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ area: areaName })
+        });
+        const data = await res.json();
+        
+        document.getElementById("ai-loading-overlay").style.display = "none";
+        
+        if (data.success) {
+            alert(`🎉 ${areaName}の構築が完了し、公開されました！`);
+            location.reload(); // reload to fetch new hybrid_tourism_data.json
+        } else {
+            alert("エラー: " + data.error);
+        }
+    } catch (e) {
+        document.getElementById("ai-loading-overlay").style.display = "none";
+        alert("通信エラーが発生しました。");
+        console.error(e);
+    }
+};
+
+document.addEventListener("DOMContentLoaded", () => {
+    document.body.addEventListener("click", (e) => {
+        if (e.target.id === "area-request-modal-close" || e.target.id === "area-request-modal") {
+            closeAreaRequestModal();
+        }
+    });
+});

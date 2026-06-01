@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api_server.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "viewer/**",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "api_server.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/viewer/$1"
+    }
+  ]
+}
